@@ -1,65 +1,44 @@
 """
-sync_facility_lookup.py — Azure Automation Runbook (Python)
+sync_facility_lookup.py - Azure Automation Runbook (Python)
 
 PURPOSE
 -------
-Populates physiciantech.power_app_facility_lookup from DOMO's
-"TC | Facilities" dataset, so the Power App's Screen 3 (New Issue) can
-resolve a facility name to its ts_account_id via a real dropdown lookup
-instead of an unusable free-text field.
+Rebuilds physiciantech.facility_master (the facility master table) and
+physiciantech.facility_carts from DOMO's "TC | Facilities" dataset, once a day.
 
-WHY THIS EXISTS (read before touching this file)
---------------------------------------------------
-This project deliberately retired two very similar tables
-(facility_ts_account_crosswalk, facility_health_system_emr_lookup) on
-9/1, once it was confirmed that TC | Facilities already carries
-everything runbook code needs in one place - the decision at the time
-was that runbook code should read TC | Facilities via the DOMO API
-directly, not duplicate it into SQL.
+facility_master holds one row per facility: facility_key, facility_name,
+ts_account_id, health_system, facility_active, video software and cart names.
+CLEAR (the web app), significance_scan, client_issue_summaries,
+ticket_case_corrections and the facility views (vw_facility_watch_list,
+vw_facility_issues, vw_facility_password_policy) read it.
 
-This script is a deliberate, narrow EXCEPTION to that decision, not a
-reversal of it: Power Apps Canvas apps have no native DOMO connector,
-so a UI control (Screen 3's facility dropdown) has no way to reach DOMO
-directly the way Python/PowerShell runbook code can. This script exists
-solely to give that one consumer a path - it is not a general-purpose
-reintroduction of the retired crosswalk tables, which is also why the
-destination table is named power_app_facility_lookup rather than
-anything resembling their old names.
+RENAMED 11/6/2026 (John): the table was called power_app_facility_lookup
+because it was first built for a Power App dropdown. The Power App is retired,
+so the table is now facility_master. A view named power_app_facility_lookup was
+left in place during the move and is dropped once every reader uses the new name.
+Docstring rewritten 11/6; logic unchanged.
 
-Keyed on facility_key, matching the validated join
-telecare_classify_crosswalk_v2.py already uses (TC | Facilities' own
-"Facility Key" column) - specifically NOT a name-based join, which this
-project already found has a ~3.8% real mismatch rate.
+Keyed on facility_key (TC | Facilities' own "Facility Key" column), not on
+facility name, which this project found has a ~3.8% mismatch rate.
 
 SCHEDULE
 --------
-Daily, matching TC | Facilities' own DOMO refresh cadence. Recommended:
-5:00 AM, after that dataset's own daily refresh should have completed -
-not independently confirmed against DOMO's actual refresh completion
-time, so if this consistently reads stale data, that's the first thing
-to check.
+Daily at 4:00 AM Eastern (schedule "facilitiy_sync" in the physicianrunbook
+Automation account). If it reads stale data, check when TC | Facilities itself
+finishes refreshing in DOMO.
 
-REQUIRED AUTOMATION VARIABLES (all should already exist in this
-Automation Account - none of these are new)
------------------------------------------------------------------
-DOMO_CLIENT_ID              Same DOMO client telecare_classify_crosswalk
-DOMO_CLIENT_SECRET          uses for its own TC | Facilities reads.
-PHYSICIANTECH_SQL_PASSWORD  Password for the physiciantech_pipeline SQL
-                            login (server/database/user are hardcoded
-                            constants below, same pattern as every other
-                            script in this project).
+REQUIRED AUTOMATION VARIABLES (all already exist in this Automation Account)
+---------------------------------------------------------------------------
+DOMO_CLIENT_ID              DOMO client, same as telecare_classify_crosswalk.
+DOMO_CLIENT_SECRET
+PHYSICIANTECH_SQL_PASSWORD  Password for the physiciantech_pipeline SQL login
+                            (server/database/user are constants below).
 
-FIRST RUN — READ THIS BEFORE TRUSTING THE OUTPUT
---------------------------------------------------
-Following the same discipline every backfill/sync script in this
-project has used: this script logs DOMO's actual returned column names
-before mapping them to anything. "Facility Key" / "Facility" /
-"TS Account ID" / "Health System" / "Facility Active" were confirmed
-against a real TC | Facilities CSV export (9/24) - not just assumed
-from other scripts' usage - so this mapping is on firmer footing than
-the original version of this script. Still worth a glance at the first
-run's log line regardless, since a live DOMO query can behave
-differently than a point-in-time export.
+CHECKS
+------
+The script logs DOMO's returned column names and stops, without writing, if
+any expected column is missing. "Facility Active" arrives as the text
+"true"/"false" and is parsed explicitly.
 """
 
 import time
@@ -243,12 +222,12 @@ def get_sql_connection():
 
 def replace_facility_lookup(conn, rows: list[dict]) -> None:
     """
-    Small reference table (~601 rows) - full clear + reload in one
+    Small reference table (~617 rows) - full clear + reload in one
     transaction is simpler and safer than incremental upsert logic for
     something this size, and matches the "Replace" philosophy this
     project already used for the old Occurrences Excel sync. Nothing
-    reads this table mid-transaction (it's a Power App/web app dropdown
-    source, not something else in this pipeline writes to), so a brief
+    reads this table mid-transaction (it's a reference table read by
+    CLEAR and the runbooks, and nothing else in this pipeline writes to it), so a brief
     moment of empty table during the transaction is not a real risk in
     practice, and the transaction guarantees it's never visible anyway.
 
@@ -273,10 +252,10 @@ def replace_facility_lookup(conn, rows: list[dict]) -> None:
     """
     cursor = conn.cursor()
     cursor.execute("DELETE FROM physiciantech.facility_carts")
-    cursor.execute("DELETE FROM physiciantech.power_app_facility_lookup")
+    cursor.execute("DELETE FROM physiciantech.facility_master")
     if rows:
         cursor.executemany(
-            "INSERT INTO physiciantech.power_app_facility_lookup "
+            "INSERT INTO physiciantech.facility_master "
             "(facility_key, facility_name, ts_account_id, health_system, facility_active, "
             "video_software, cart_numbers, video_software_1, cart_number_1, "
             "video_software_2, cart_number_2, video_software_3, cart_number_3, updated_at) "
@@ -334,7 +313,7 @@ def main():
     conn = get_sql_connection()
     try:
         replace_facility_lookup(conn, usable)
-        print(f"Wrote {len(usable)} rows to physiciantech.power_app_facility_lookup")
+        print(f"Wrote {len(usable)} rows to physiciantech.facility_master")
     finally:
         conn.close()
 
